@@ -79,49 +79,60 @@ class FileManager:
             'archivos': sorted(archivos)
         }
 
-    def verify_file_for_upload(self, course_name: str, filename: str) -> dict:
+    def verify_file_for_upload(self, course_name: str, filenames_str: str) -> dict:
         """
-        Verifica que el archivo exista en la carpeta 'Tareas' del curso.
-        Usa búsqueda flexible: insensible a mayúsculas, nombre parcial del curso y archivo.
+        Verifica que uno o varios archivos existan en la carpeta 'Tareas' de un curso específico
+        y que no estén en blanco (0 bytes). Retorna las rutas absolutas listas para Playwright.
         """
-        # 1. Encontrar la carpeta del curso con búsqueda flexible
-        curso_path = self._find_course_folder(course_name)
-        if curso_path is None:
+        # 1. Encontrar la carpeta del curso y su subcarpeta Tareas
+        course_folder = self._find_course_folder(course_name)
+        if not course_folder:
             return {
                 'valid': False,
-                'file_path': None,
-                'error_message': (
-                    f"No se encontró carpeta para el curso '{course_name}'. "
-                    f"Cursos disponibles: {self._list_available_courses()}"
-                )
-            }
-        
-        tareas_path = curso_path / 'Tareas'
-        
-        # 2. Encontrar el archivo con búsqueda flexible
-        file_path = self._find_file_in_folder(tareas_path, filename)
-        if file_path is None:
-            archivos = [f.name for f in tareas_path.iterdir() if f.is_file()] if tareas_path.exists() else []
-            return {
-                'valid': False,
-                'file_path': None,
-                'error_message': (
-                    f"El archivo '{filename}' no fue encontrado en '{tareas_path}'. "
-                    f"Archivos disponibles: {archivos if archivos else 'ninguno'}"
-                )
+                'file_paths': [],
+                'error_message': f"No se encontró la carpeta local para el curso '{course_name}'. Cursos disponibles: {self._list_available_courses()}"
             }
 
-        # 3. Validar que no esté vacío
-        if file_path.stat().st_size == 0:
+        tareas_path = course_folder / 'Tareas'
+        if not tareas_path.exists():
             return {
                 'valid': False,
-                'file_path': str(file_path),
-                'error_message': f"El archivo '{file_path.name}' está en blanco (0 bytes)."
+                'file_paths': [],
+                'error_message': f"El curso '{course_folder.name}' no tiene una carpeta 'Tareas'."
+            }
+        
+        # 2. Separar los nombres de archivos por comas y validar cada uno
+        filenames = [f.strip() for f in filenames_str.split(",") if f.strip()]
+        if not filenames:
+            return {
+                'valid': False,
+                'file_paths': [],
+                'error_message': "No se proporcionó ningún nombre de archivo."
             }
             
+        valid_paths = []
+        errors = []
+        
+        for filename in filenames:
+            file_path = self._find_file_in_folder(tareas_path, filename)
+            if file_path is None:
+                errors.append(f"No encontrado: '{filename}'")
+            elif file_path.stat().st_size == 0:
+                errors.append(f"Vacío (0 bytes): '{filename}'")
+            else:
+                valid_paths.append(str(file_path))
+                
+        if errors:
+            archivos_disp = [f.name for f in tareas_path.iterdir() if f.is_file()] if tareas_path.exists() else []
+            return {
+                'valid': False,
+                'file_paths': [],
+                'error_message': f"Errores en los archivos: {'; '.join(errors)}. Archivos disponibles: {archivos_disp}"
+            }
+
         return {
             'valid': True,
-            'file_path': str(file_path),
+            'file_paths': valid_paths,
             'error_message': None
         }
 

@@ -44,7 +44,15 @@ def _save_curso(conn: sqlite3.Connection, nombre: str, url: str):
 
 def _save_tarea(conn: sqlite3.Connection, curso: str, nombre_tarea: str,
                 enunciado: str, fecha_limite: str):
-    """Inserta o actualiza una tarea en la BD."""
+    """
+    Inserta o actualiza una tarea en la BD.
+    - Si la tarea ya existía con estado 'Entregada', NO sobreescribe ese estado.
+    - Si la fecha_limite ya venció, marca automáticamente como 'Vencida'.
+    - Si no, deja el estado en 'Pendiente'.
+    """
+    import re
+    from datetime import datetime
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS tareas (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,13 +64,38 @@ def _save_tarea(conn: sqlite3.Connection, curso: str, nombre_tarea: str,
             UNIQUE(curso, nombre_tarea)
         )
     """)
+
+    # Determinar si la tarea está vencida según la fecha_limite
+    nuevo_estado = "Pendiente"
+    if fecha_limite:
+        # Intentar parsear la fecha en múltiples formatos comunes
+        formatos = ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S"]
+        fecha_dt = None
+        # Extraer solo la parte de fecha si hay texto adicional (ej: "Cierre: 10/09/2026")
+        match = re.search(r"(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})", fecha_limite)
+        if match:
+            fecha_str = match.group(1)
+            for fmt in formatos:
+                try:
+                    fecha_dt = datetime.strptime(fecha_str, fmt)
+                    break
+                except ValueError:
+                    continue
+        if fecha_dt and fecha_dt.date() < datetime.now().date():
+            nuevo_estado = "Vencida"
+
+    # Insertar o actualizar — pero NO sobreescribir estado si ya fue marcado como 'Entregada'
     conn.execute("""
         INSERT INTO tareas (curso, nombre_tarea, enunciado, fecha_limite, estado)
-        VALUES (?, ?, ?, ?, 'Pendiente')
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(curso, nombre_tarea) DO UPDATE SET
             enunciado    = excluded.enunciado,
-            fecha_limite = excluded.fecha_limite
-    """, (curso.strip(), nombre_tarea.strip(), enunciado.strip(), fecha_limite.strip()))
+            fecha_limite = excluded.fecha_limite,
+            estado       = CASE
+                WHEN tareas.estado = 'Entregada' THEN 'Entregada'
+                ELSE excluded.estado
+            END
+    """, (curso.strip(), nombre_tarea.strip(), enunciado.strip(), fecha_limite.strip(), nuevo_estado))
 
 
 # ─────────────────────────────────────────────
@@ -509,9 +542,13 @@ def sincronizar_cursos_y_tareas() -> dict:
 # SUBIDA DE TAREA (VISUAL CON PAUSA)
 # ─────────────────────────────────────────────
 
-def subir_tarea_plataforma(curso_nombre: str, tarea_nombre: str, ruta_archivo: str) -> dict:
+def subir_tarea_plataforma(curso: str, tarea_nombre: str, rutas_archivos: list[str]) -> dict:
     """
-    Sube una tarea a la plataforma UNCP con el flujo correcto:
+    Simula la navegacion para subir uno o varios archivos a una tarea especifica.
+    ATENCION: Este script NO presiona el boton final de envio. Deja el navegador
+    abierto en pausa para que el usuario valide y confirme la entrega.
+
+    Flujo:
       1. Login
       2. Navegar a la lista de tareas del curso
       3. Hacer clic en 'Ver detalle' de la tarea específica
@@ -526,13 +563,16 @@ def subir_tarea_plataforma(curso_nombre: str, tarea_nombre: str, ruta_archivo: s
 
     print("\n" + "=" * 60)
     print(f"  PREPARANDO ENVIO DE TAREA: {tarea_nombre}")
-    print(f"  Curso : {curso_nombre}")
-    print(f"  Archivo: {os.path.basename(ruta_archivo)}")
+    print(f"  Curso : {curso}")
+    
+    nombres_archivos = [os.path.basename(p) for p in rutas_archivos]
+    print(f"  Archivo(s): {', '.join(nombres_archivos)}")
     print("=" * 60)
 
-    # Validar que el archivo exista antes de abrir el navegador
-    if not os.path.isfile(ruta_archivo):
-        return {"exito": False, "resumen": f"El archivo '{ruta_archivo}' no existe en el sistema local."}
+    # Validar que los archivos existan antes de abrir el navegador
+    for ruta in rutas_archivos:
+        if not os.path.isfile(ruta):
+            return {"exito": False, "resumen": f"El archivo '{ruta}' no existe en el sistema local."}
 
     with sync_playwright() as p:
         # MODO VISIBLE — nunca headless para envíos
@@ -557,12 +597,12 @@ def subir_tarea_plataforma(curso_nombre: str, tarea_nombre: str, ruta_archivo: s
                 return {"exito": False, "resumen": "Fallo al iniciar sesion en la plataforma."}
 
             # ── 2. Buscar el curso ──────────────────────────────────────
-            print(f"\n[INFO] Buscando el curso '{curso_nombre}' en la plataforma...")
+            print(f"\n[INFO] Buscando el curso '{curso}' en la plataforma...")
             cursos = _extraer_cursos(page)
 
             # Busqueda flexible: exacta primero, luego parcial (insensible a mayusculas)
             curso_target = None
-            curso_lower = curso_nombre.lower().strip()
+            curso_lower = curso.lower().strip()
             for c in cursos:
                 if c["nombre"].lower() == curso_lower:
                     curso_target = c
@@ -578,7 +618,7 @@ def subir_tarea_plataforma(curso_nombre: str, tarea_nombre: str, ruta_archivo: s
                 nombres = [c["nombre"] for c in cursos]
                 return {
                     "exito": False,
-                    "resumen": f"No se encontro el curso '{curso_nombre}'. Cursos disponibles: {nombres}"
+                    "resumen": f"No se encontro el curso '{curso}'. Cursos disponibles: {nombres}"
                 }
 
             print(f"[OK] Curso encontrado: {curso_target['nombre']}")
@@ -641,30 +681,28 @@ def subir_tarea_plataforma(curso_nombre: str, tarea_nombre: str, ruta_archivo: s
             page.wait_for_timeout(2000)
 
             # ── 6. Adjuntar el archivo ──────────────────────────────────
-            # La pagina tiene un input[type=file] (puede estar oculto) y un boton "+ Adjuntar tarea"
-            print(f"[INFO] Adjuntando archivo: {os.path.basename(ruta_archivo)}")
+            # La pagina de la UNCP no permite multiples archivos en un solo set_input_files,
+            # requiere clickear "Adjuntar" y usar el nuevo input por cada archivo extra.
+            nombres_archivos = [os.path.basename(p) for p in rutas_archivos]
+            print(f"[INFO] Adjuntando {len(rutas_archivos)} archivo(s): {', '.join(nombres_archivos)}")
 
-            # Primero intentar con el input file directamente
-            input_file = page.query_selector("input[type='file']")
-            if input_file:
-                input_file.set_input_files(ruta_archivo)
-                print("[OK] Archivo adjuntado correctamente.")
-            else:
-                # Si el input esta oculto, hacer clic en el boton de adjuntar primero
+            for ruta in rutas_archivos:
+                # Buscamos el boton para agregar un nuevo slot de archivo
                 btn_adjuntar = page.query_selector("button:has-text('Adjuntar'), a:has-text('Adjuntar')")
                 if btn_adjuntar:
                     btn_adjuntar.click()
                     page.wait_for_timeout(1000)
-                    input_file = page.query_selector("input[type='file']")
-                    if input_file:
-                        input_file.set_input_files(ruta_archivo)
-                        print("[OK] Archivo adjuntado correctamente.")
-                    else:
-                        browser.close()
-                        return {"exito": False, "resumen": "No se pudo encontrar el campo de subida de archivo en la pagina."}
-                else:
+                
+                inputs_file = page.query_selector_all("input[type='file']")
+                if not inputs_file:
                     browser.close()
-                    return {"exito": False, "resumen": "No se encontro el campo de subida de archivo ni el boton de adjuntar."}
+                    return {"exito": False, "resumen": "No se pudo encontrar el campo de subida de archivo en la pagina."}
+                
+                # Asignar el archivo al último input disponible (el que se acaba de crear)
+                ultimo_input = inputs_file[-1]
+                ultimo_input.set_input_files(ruta)
+                print(f"[OK] Archivo '{os.path.basename(ruta)}' adjuntado.")
+                page.wait_for_timeout(1000)
 
             page.wait_for_timeout(1500)
 
@@ -674,7 +712,7 @@ def subir_tarea_plataforma(curso_nombre: str, tarea_nombre: str, ruta_archivo: s
             print("\n" + "!" * 60)
             print("  [ATENCION — ACCION REQUERIDA DEL USUARIO]")
             print("!")
-            print(f"  Archivo '{os.path.basename(ruta_archivo)}' adjuntado.")
+            print(f"  Archivo(s) '{', '.join(nombres_archivos)}' adjuntado(s).")
             print("  El script esta en PAUSA.")
             print("  Revisa la ventana del navegador:")
             print("    1. Verifica que el archivo adjunto sea el correcto.")
@@ -689,9 +727,9 @@ def subir_tarea_plataforma(curso_nombre: str, tarea_nombre: str, ruta_archivo: s
             return {
                 "exito": True,
                 "resumen": (
-                    f"El archivo '{os.path.basename(ruta_archivo)}' fue adjuntado exitosamente "
-                    f"en la tarea '{tarea_nombre}'. El navegador quedo en pausa para que el "
-                    f"usuario realice la confirmacion y envio final."
+                    f"El/los archivo(s) '{', '.join(nombres_archivos)}' fue/fueron adjuntado(s) exitosamente "
+                    f"en la tarea '{tarea_nombre}'. El navegador quedó en pausa para que el "
+                    f"usuario realice la confirmación y envío final."
                 )
             }
 

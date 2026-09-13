@@ -25,7 +25,7 @@ def get_client(provider: str = "gemini"):
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
         )
         # gemini-2.0-flash: modelo rápido, soporte completo de tool calling
-        model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+        model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
         return client, model_name
         
     elif provider == "ollama":

@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>UNCP Agent - Asistente Académico Universitario</title>
+  <meta name="description" content="Agente IA autónomo para la gestión de tareas y automatización de la plataforma virtual UNCP.">
+  
+  <!-- Google Fonts: Inter & Outfit -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-container">
+    
+    <!-- BARRA LATERAL (SIDEBAR) -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <div class="brand-icon">
+            <i class="fa-solid fa-graduation-cap"></i>
+          </div>
+          <div class="brand-text">
+            <h2>UNCP Agent</h2>
+            <span>Plataforma Virtual</span>
+          </div>
+        </div>
+        <button class="btn-icon mobile-only" id="close-sidebar-btn" aria-label="Cerrar menú">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-title">
+          <span><i class="fa-solid fa-book-bookmark"></i> Mis Cursos & Tareas</span>
+          <button class="btn-sync-small" id="sync-sidebar-btn" title="Sincronizar tareas con el portal">
+            <i class="fa-solid fa-rotate-right"></i>
+          </button>
+        </div>
+        <div class="task-filters">
+          <button class="filter-chip active" data-filter="todas">Todas</button>
+          <button class="filter-chip" data-filter="urgente">Urgentes</button>
+          <button class="filter-chip" data-filter="pendiente">Pendientes</button>
+        </div>
+        <div class="tasks-container" id="tasks-list">
+          <div class="tasks-skeleton">
+            <div class="skeleton-card"></div>
+            <div class="skeleton-card"></div>
+            <div class="skeleton-card"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="connection-status" id="connection-status">
+          <span class="status-dot offline" id="status-dot"></span>
+          <span class="status-text" id="status-text">Verificando conexión...</span>
+        </div>
+        <div class="system-info">
+          <span>Local: <code>UNCP/</code></span>
+          <span class="badge-tag">FastAPI API</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- OVERLAY MÓVIL -->
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <!-- ÁREA PRINCIPAL (MAIN CHAT AREA) -->
+    <main class="main-content">
+      
+      <!-- CABECERA PRINCIPAL -->
+      <header class="main-header">
+        <div class="header-left">
+          <button class="btn-icon mobile-only" id="open-sidebar-btn" aria-label="Abrir cursos">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+          <div class="agent-avatar-status">
+            <div class="avatar-ring">
+              <i class="fa-solid fa-robot"></i>
+            </div>
+            <div class="agent-details">
+              <h1>Agente Académico UNCP</h1>
+              <div class="agent-state-badge" id="agent-state-badge">
+                <span class="pulse-indicator"></span>
+                <span id="agent-state-text">Listo para ayudarte</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="header-actions">
+          <button class="btn-secondary mobile-only" id="open-files-btn" aria-label="Abrir archivos">
+            <i class="fa-solid fa-folder"></i>
+          </button>
+          <button class="btn-secondary" id="sync-platform-btn">
+            <i class="fa-solid fa-arrows-rotate"></i>
+            <span>Sincronizar Portal</span>
+          </button>
+          <button class="btn-secondary danger" id="clear-chat-btn" title="Limpiar conversación">
+            <i class="fa-solid fa-trash-can"></i>
+          </button>
+        </div>
+      </header>
+
+      <!-- ÁREA DE MENSAJES -->
+      <section class="chat-viewport" id="chat-viewport">
+        <div class="chat-messages" id="chat-messages">
+          
+          <!-- MENSAJE DE BIENVENIDA POR DEFECTO -->
+          <div class="message-group agent-group welcome-card">
+            <div class="avatar">
+              <i class="fa-solid fa-robot"></i>
+            </div>
+            <div class="message-content">
+              <div class="message-header">
+                <span class="sender-name">UNCP Agent</span>
+                <span class="message-time">Ahora</span>
+              </div>
+              <div class="message-body">
+                <h3>¡Hola! Soy tu Asistente Académico UNCP 👋</h3>
+                <p>Estoy conectado a tu portal universitario y a tu carpeta local <code>UNCP/</code>. ¿En qué te puedo ayudar hoy?</p>
+                
+                <div class="welcome-actions">
+                  <div class="action-card" onclick="app.sendQuickPrompt('Sincronizar mis tareas del portal virtual')">
+                    <i class="fa-solid fa-rotate"></i>
+                    <div>
+                      <strong>Sincronizar Tareas</strong>
+                      <span>Escanear nuevos cursos y plazos de entrega</span>
+                    </div>
+                  </div>
+                  <div class="action-card" onclick="app.sendQuickPrompt('¿Qué tareas vencen esta semana?')">
+                    <i class="fa-solid fa-clock-rotate-left"></i>
+                    <div>
+                      <strong>Tareas Próximas</strong>
+                      <span>Verificar cuáles son las entregas más urgentes</span>
+                    </div>
+                  </div>
+                  <div class="action-card" onclick="app.sendQuickPrompt('Listar los archivos disponibles en la carpeta Tareas de mis cursos')">
+                    <i class="fa-solid fa-folder-open"></i>
+                    <div>
+                      <strong>Entregables Locales</strong>
+                      <span>Revisar los archivos listos para subir en UNCP/</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- BARRA DE ACCIONES RÁPIDAS (SUGGESTIONS CHIPS) -->
+      <div class="quick-suggestions" id="quick-suggestions">
+        <button class="chip-btn" onclick="app.sendQuickPrompt('Lista mis cursos y tareas pendientes')">
+          <i class="fa-solid fa-list-check"></i> Listar tareas pendientes
+        </button>
+        <button class="chip-btn" onclick="app.sendQuickPrompt('Sincronizar la plataforma virtual')">
+          <i class="fa-solid fa-arrows-rotate"></i> Sincronizar portal
+        </button>
+        <button class="chip-btn" onclick="app.sendQuickPrompt('Preparar el envío de una tarea')">
+          <i class="fa-solid fa-paper-plane"></i> Preparar entrega
+        </button>
+      </div>
+
+      <!-- BARRA DE ENTRADA (CHAT INPUT BAR) -->
+      <footer class="chat-input-container">
+        <form class="chat-form" id="chat-form" onsubmit="app.handleFormSubmit(event)">
+          <div class="input-wrapper">
+            <textarea 
+              id="chat-input" 
+              placeholder="Escribe tu consulta o instrucción para el agente UNCP..." 
+              rows="1"
+              required></textarea>
+            <button type="submit" class="btn-send" id="send-btn" title="Enviar mensaje">
+              <i class="fa-solid fa-paper-plane"></i>
+            </button>
+          </div>
+        </form>
+        <div class="input-footer-note">
+          <i class="fa-solid fa-shield-halved"></i>
+          <span>Protocolo de Seguridad: Los envíos finales requieren tu confirmación visual en el navegador.</span>
+        </div>
+      </footer>
+
+    </main>
+
+    <!-- BARRA LATERAL DERECHA (EXPLORADOR DE ARCHIVOS) -->
+    <aside class="sidebar right-sidebar" id="file-explorer-sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <div class="brand-icon" style="background: linear-gradient(135deg, var(--accent-cyan) 0%, var(--primary) 100%);">
+            <i class="fa-solid fa-folder-tree"></i>
+          </div>
+          <div class="brand-text">
+            <h2>Archivos Locales</h2>
+            <span>Carpeta UNCP/</span>
+          </div>
+        </div>
+        <button class="btn-icon mobile-only" id="close-file-explorer-btn" aria-label="Cerrar explorador">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-title">
+          <span><i class="fa-regular fa-folder-open"></i> Explorador</span>
+          <button class="btn-sync-small" id="sync-files-btn" title="Actualizar archivos">
+            <i class="fa-solid fa-rotate-right"></i>
+          </button>
+        </div>
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 10px;">
+          Arrastra un archivo hacia una tarea para preparar su envío.
+        </p>
+        <div class="files-container" id="files-tree">
+          <!-- El árbol de archivos se cargará dinámicamente aquí -->
+          <div class="empty-state">
+            <i class="fa-solid fa-circle-notch fa-spin"></i>
+            <p>Cargando archivos...</p>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- JS Principal -->
+  <script src="app.js"></script>
+</body>
+</html>

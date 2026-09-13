@@ -21,13 +21,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.agent import UNCPAgent
-from src.core.db import init_db
+from src.core.db import init_db, get_connection
 
 # ─── Modelos de Request/Response ──────────────────────────────────────────────
 
 class MensajeRequest(BaseModel):
-    mensaje: str
-    sesion_id: str = "default"  # Identificador de sesión para multi-usuario (futuro)
+    mensaje: str | None = None
+    prompt: str | None = None
+    sesion_id: str = "default"
+
+    def get_texto(self) -> str:
+        return self.mensaje or self.prompt or ""
 
 class MensajeResponse(BaseModel):
     respuesta: str
@@ -74,10 +78,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS: permite peticiones desde el frontend local (Vite/React suele usar 5173)
+# CORS: permite peticiones desde el frontend local y cualquier origen de desarrollo
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -98,11 +102,12 @@ def chat(request: MensajeRequest):
     El agente puede ejecutar herramientas (sincronizar, listar tareas, subir archivo) 
     de forma autónoma antes de responder.
     """
-    if not request.mensaje.strip():
+    texto = request.get_texto()
+    if not texto.strip():
         raise HTTPException(status_code=400, detail="El mensaje no puede estar vacío.")
 
     agente = _get_agente(request.sesion_id)
-    resultado = agente.chat(request.mensaje)
+    resultado = agente.chat(texto)
     return MensajeResponse(**resultado)
 
 
@@ -128,7 +133,166 @@ def estado_agente(sesion_id: str):
     return EstadoResponse(**agente.get_estado())
 
 
+
+@app.get("/tareas", tags=["Frontend"])
+def obtener_tareas():
+    """Retorna la lista plana de todas las tareas sincronizadas en la BD."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT id, curso, nombre_tarea, enunciado, fecha_limite, estado FROM tareas ORDER BY curso, id")
+        filas = cursor.fetchall()
+        tareas = []
+        for fila in filas:
+            tareas.append({
+                "id": fila[0],
+                "curso": fila[1],
+                "nombre_tarea": fila[2],
+                "enunciado": fila[3],
+                "fecha_limite": fila[4],
+                "estado": fila[5]
+            })
+        return {"status": "ok", "tareas": tareas}
+    except Exception as e:
+        return {"status": "error", "detalle": str(e)}
+    finally:
+        conn.close()
+
+
+@app.get("/tareas/cursos", tags=["Frontend"])
+def obtener_tareas_por_curso():
+    """Retorna las tareas agrupadas por curso para el sidebar del frontend."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        # Obtener lista de cursos con sus tareas
+        cursor.execute("""
+            SELECT c.nombre, c.url,
+                   t.id, t.nombre_tarea, t.enunciado, t.fecha_limite, t.estado
+            FROM cursos c
+            LEFT JOIN tareas t ON t.curso = c.nombre
+            ORDER BY c.nombre, t.id
+        """)
+        filas = cursor.fetchall()
+        cursos_dict = {}
+        for fila in filas:
+            nombre_curso = fila[0]
+            if nombre_curso not in cursos_dict:
+                cursos_dict[nombre_curso] = {
+                    "nombre": nombre_curso,
+                    "url": fila[1],
+                    "tareas": []
+                }
+            if fila[2] is not None:  # id de tarea puede ser NULL si LEFT JOIN sin tareas
+                cursos_dict[nombre_curso]["tareas"].append({
+                    "id": fila[2],
+                    "nombre_tarea": fila[3],
+                    "enunciado": fila[4],
+                    "fecha_limite": fila[5],
+                    "estado": fila[6]
+                })
+        return {"status": "ok", "cursos": list(cursos_dict.values())}
+    except Exception as e:
+        return {"status": "error", "detalle": str(e)}
+    finally:
+        conn.close()
+
+
+class CambioEstadoRequest(BaseModel):
+    estado: str  # "Pendiente", "Entregada", "Vencida"
+
+
+@app.put("/tareas/{tarea_id}/estado", tags=["Frontend"])
+def cambiar_estado_tarea(tarea_id: int, body: CambioEstadoRequest):
+    """Permite cambiar el estado de una tarea manualmente desde el frontend."""
+    estados_validos = ["Pendiente", "Entregada", "Vencida", "En progreso"]
+    if body.estado not in estados_validos:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Estado inválido. Debe ser uno de: {', '.join(estados_validos)}"
+        )
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE tareas SET estado = ? WHERE id = ?", (body.estado, tarea_id))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Tarea no encontrada.")
+        conn.commit()
+        return {"status": "ok", "mensaje": f"Estado actualizado a '{body.estado}'."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        return {"status": "error", "detalle": str(e)}
+    finally:
+        conn.close()
+
+
+@app.get("/archivos/estructura", tags=["Frontend"])
+def obtener_estructura_archivos():
+    """
+    Escanea la carpeta UNCP/ local y devuelve el árbol de archivos por curso.
+    Solo incluye la carpeta Tareas/ de cada curso (los entregables relevantes).
+    """
+    # La carpeta UNCP/ está en la raíz del proyecto (un nivel arriba del backend/)
+    uncp_root = Path(__file__).parent.parent / "UNCP"
+    if not uncp_root.exists():
+        return {"status": "ok", "cursos": [], "ruta_base": str(uncp_root)}
+
+    cursos = []
+    try:
+        for curso_dir in sorted(uncp_root.iterdir()):
+            if not curso_dir.is_dir():
+                continue
+
+            tareas_dir    = curso_dir / "Tareas"
+            materiales_dir = curso_dir / "Materiales"
+
+            archivos_tareas = []
+            archivos_materiales = []
+
+            # Archivos en Tareas/
+            if tareas_dir.exists():
+                for f in sorted(tareas_dir.iterdir()):
+                    if f.is_file() and not f.name.startswith('.'):
+                        archivos_tareas.append({
+                            "nombre": f.name,
+                            "ruta": str(f).replace("\\", "/"),
+                            "tamano": f.stat().st_size,
+                            "extension": f.suffix.lower()
+                        })
+
+            # Archivos en Materiales/
+            if materiales_dir.exists():
+                for f in sorted(materiales_dir.iterdir()):
+                    if f.is_file() and not f.name.startswith('.'):
+                        archivos_materiales.append({
+                            "nombre": f.name,
+                            "ruta": str(f).replace("\\", "/"),
+                            "tamano": f.stat().st_size,
+                            "extension": f.suffix.lower()
+                        })
+
+            cursos.append({
+                "nombre": curso_dir.name,
+                "tareas_dir_existe": tareas_dir.exists(),
+                "materiales_dir_existe": materiales_dir.exists(),
+                "archivos_tareas": archivos_tareas,
+                "archivos_materiales": archivos_materiales
+            })
+
+        return {
+            "status": "ok",
+            "ruta_base": str(uncp_root).replace("\\", "/"),
+            "cursos": cursos
+        }
+    except Exception as e:
+        return {"status": "error", "detalle": str(e)}
+
+
 # ─── Modo CLI (para pruebas rápidas sin levantar el servidor) ──────────────────
+
+
 
 def cli():
     """Interfaz de línea de comandos para pruebas locales."""

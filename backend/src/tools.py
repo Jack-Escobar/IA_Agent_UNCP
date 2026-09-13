@@ -86,14 +86,15 @@ def preparar_envio_tarea(curso: str, archivo: str, tarea: str) -> str:
     if not res['valid']:
         return f"Error al preparar envío: {res['error_message']}"
     
+    archivos_str = "\n".join(f"- {p}" for p in res['file_paths'])
     return (
-        f"Archivo validado correctamente.\n"
+        f"Archivos validados correctamente.\n"
         f"Detalles para confirmar:\n"
         f"- Tarea: {tarea}\n"
         f"- Curso: {curso}\n"
-        f"- Archivo: {res['file_path']}\n\n"
+        f"Archivos:\n{archivos_str}\n\n"
         f"POR FAVOR, PREGUNTA AL USUARIO SI CONFIRMA ESTE ENVÍO ANTES DE EJECUTARLO. "
-        f"Aclara que la ejecución abrirá el navegador de forma visible, adjuntará el archivo y se pausará esperando un clic manual final del usuario (o confirmación) para mayor seguridad."
+        f"Aclara que la ejecución abrirá el navegador de forma visible, adjuntará los archivos y se pausará esperando un clic manual final del usuario (o confirmación) para mayor seguridad."
     )
 
 def ejecutar_envio_tarea(curso: str, archivo: str, tarea: str) -> str:
@@ -101,10 +102,10 @@ def ejecutar_envio_tarea(curso: str, archivo: str, tarea: str) -> str:
     from src.services.scraper import subir_tarea_plataforma
     res = fm.verify_file_for_upload(curso, archivo)
     if not res['valid']:
-         return f"Error: Archivo no válido. {res['error_message']}"
+         return f"Error: Archivo(s) no válido(s). {res['error_message']}"
     
     # Llamamos al script de scraper que abre la plataforma en modo visible y pausa.
-    resultado = subir_tarea_plataforma(curso, tarea, res['file_path'])
+    resultado = subir_tarea_plataforma(curso, tarea, res['file_paths'])
     return resultado['resumen']
 
 # ---------------------------------------------------------------------
@@ -180,7 +181,7 @@ TOOLS_SCHEMA = [
                 "type": "object",
                 "properties": {
                     "curso": {"type": "string", "description": "Nombre del curso."},
-                    "archivo": {"type": "string", "description": "Nombre del archivo a enviar (ej. 'tarea1.pdf')."},
+                    "archivo": {"type": "string", "description": "Nombre de los archivos a enviar, separados por comas (ej. 'tarea1.pdf, tarea2.pdf')."},
                     "tarea": {"type": "string", "description": "Nombre de la tarea en la plataforma."},
                 },
                 "required": ["curso", "archivo", "tarea"],
@@ -196,7 +197,7 @@ TOOLS_SCHEMA = [
                 "type": "object",
                 "properties": {
                     "curso": {"type": "string", "description": "Nombre del curso."},
-                    "archivo": {"type": "string", "description": "Nombre del archivo a enviar."},
+                    "archivo": {"type": "string", "description": "Nombre de los archivos a enviar, separados por comas."},
                     "tarea": {"type": "string", "description": "Nombre de la tarea en la plataforma."},
                 },
                 "required": ["curso", "archivo", "tarea"],
