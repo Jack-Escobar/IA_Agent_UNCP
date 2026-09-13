@@ -1,9 +1,9 @@
 /**
- * UNCP AGENT - Frontend Application Logic v2
- * Sidebar con acordeón de cursos/tareas + cambio de estado manual
+ * ADESAPILOT - Frontend Application Logic v2
+ * Handles UI interactions, API communication, and dynamic rendering.
  */
 
-class UNCPAgentApp {
+class AdesaPilotApp {
   constructor() {
     this.apiBaseUrl = 'http://127.0.0.1:8000';
     this.sessionId = this.getOrCreateSessionId();
@@ -164,6 +164,12 @@ class UNCPAgentApp {
         if (data.status === 'ok') {
           this.cursosData = data.cursos;
           this.renderCursos();
+          
+          // Solo ejecutar la alerta proactiva la primera vez que se carga
+          if (!this.proactiveAlertSent) {
+            this.checkProactiveAlerts();
+            this.proactiveAlertSent = true;
+          }
         }
       }
     } catch (e) {
@@ -193,9 +199,9 @@ class UNCPAgentApp {
         tareas = tareas.filter(t => this.getEstadoMeta(t.estado).clase === 'pendiente');
       }
 
-      // Contar pendientes para el badge del curso
+      // Contar pendientes: solo tareas que NO están Entregadas ni Vencidas
       const totalPendientes = (curso.tareas || []).filter(
-        t => !['Entregada'].includes(t.estado)
+        t => !['Entregada', 'Vencida'].includes(t.estado)
       ).length;
 
       const courseId = `curso-${idx}`;
@@ -233,16 +239,18 @@ class UNCPAgentApp {
 
   buildTaskCard(tarea) {
     const meta = this.getEstadoMeta(tarea.estado);
-    const esPendiente = !tarea.estado.toLowerCase().includes('entregada');
+    // No se puede enviar a tareas vencidas o ya entregadas
+    const esEnviable = !tarea.estado.toLowerCase().includes('entregada') &&
+                       !tarea.estado.toLowerCase().includes('vencida');
     
     return `
       <div class="task-card task-card--sm" 
-           ${esPendiente ? `
+           ${esEnviable ? `
            draggable="false"
            ondragover="app.handleDragOver(event)" 
            ondragleave="app.handleDragLeave(event)" 
            ondrop="app.handleDrop(event, '${this.escapeHtml(tarea.nombre_tarea)}')"
-           ` : ''}>
+           ` : 'title="Entrega bloqueada: esta tarea está vencida o ya fue entregada."'}>
         <div class="task-card-header">
           <span class="status-badge ${meta.clase}">${meta.icono} ${this.escapeHtml(tarea.estado)}</span>
           <button class="btn-change-estado" 
@@ -271,6 +279,60 @@ class UNCPAgentApp {
     if (e.includes('urgente') || e.includes('vence pronto')) return { clase: 'urgente', icono: '🚨' };
     if (e.includes('progreso')) return { clase: 'progreso', icono: '🔄' };
     return { clase: 'pendiente', icono: '📋' };
+  }
+
+  checkProactiveAlerts() {
+    if (!this.cursosData) return;
+    
+    let tareasUrgentes = [];
+    const hoy = new Date();
+    
+    // Buscar en todos los cursos
+    this.cursosData.forEach(curso => {
+      if (!curso.tareas) return;
+      curso.tareas.forEach(tarea => {
+        // Ignorar tareas ya entregadas o vencidas
+        if (tarea.estado === 'Entregada' || tarea.estado === 'Vencida') return;
+        
+        if (tarea.fecha_limite) {
+          // Extraer la fecha con formato DD/MM/YYYY o similar usando regex
+          const match = tarea.fecha_limite.match(/(\d{1,2})[/\-](\d{1,2})[/\-](\d{2,4})/);
+          if (match) {
+            let [, d, m, y] = match;
+            if (y.length === 2) y = '20' + y;
+            const fechaLimite = new Date(y, m - 1, d);
+            
+            // Calcular diferencia en días
+            const diffTime = fechaLimite - hoy;
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            
+            // Si vence en 3 días o menos
+            if (diffDays >= 0 && diffDays <= 3) {
+              tareasUrgentes.push({
+                curso: curso.nombre,
+                tarea: tarea.nombre_tarea,
+                dias: diffDays
+              });
+            }
+          }
+        }
+      });
+    });
+
+    if (tareasUrgentes.length > 0) {
+      let listaHtml = tareasUrgentes.map(t => 
+        `<li><strong>${this.escapeHtml(t.tarea)}</strong> <br><small>${this.escapeHtml(t.curso)} (Vence en ${t.dias} días)</small></li>`
+      ).join('');
+      
+      const alertMsg = `
+        <h3><i class="fa-solid fa-bell" style="color: var(--status-urgente)"></i> Alerta Proactiva</h3>
+        <p>He detectado <strong>${tareasUrgentes.length} tarea(s)</strong> que vencen pronto. Te recomiendo priorizarlas:</p>
+        <ul style="margin-left: 20px; margin-top: 10px;">
+          ${listaHtml}
+        </ul>
+      `;
+      this.addMessageToUI('AdesaPilot', alertMsg, 'agent', true);
+    }
   }
 
   // ─── EXPLORADOR DE ARCHIVOS & DRAG AND DROP ─────────────────────────────────
@@ -404,6 +466,21 @@ class UNCPAgentApp {
     e.preventDefault();
     const card = e.currentTarget;
     card.classList.remove('drag-over');
+
+    // Segunda capa de seguridad: verificar el estado de la tarea en los datos locales
+    if (this.cursosData) {
+      for (const curso of this.cursosData) {
+        const tarea = (curso.tareas || []).find(t => t.nombre_tarea === taskName);
+        if (tarea) {
+          const estado = (tarea.estado || '').toLowerCase();
+          if (estado.includes('vencida') || estado.includes('entregada')) {
+            this.showToast(`⛔ Entrega bloqueada: la tarea "${taskName}" está ${tarea.estado}.`, 'error');
+            return;
+          }
+          break;
+        }
+      }
+    }
     
     const dragData = e.dataTransfer.getData('text/plain');
     if (dragData) {
@@ -624,7 +701,7 @@ class UNCPAgentApp {
       <div class="avatar"><i class="fa-solid fa-robot"></i></div>
       <div class="message-content">
         <div class="message-header">
-          <span class="sender-name">UNCP Agent</span>
+          <span class="sender-name">AdesaPilot</span>
           <span class="message-time">${this.getCurrentTime()}</span>
         </div>
         <div class="message-body loading-body">
@@ -716,4 +793,4 @@ class UNCPAgentApp {
 
 // Inicializar al cargar DOM
 let app;
-document.addEventListener('DOMContentLoaded', () => { app = new UNCPAgentApp(); });
+document.addEventListener('DOMContentLoaded', () => { app = new AdesaPilotApp(); });

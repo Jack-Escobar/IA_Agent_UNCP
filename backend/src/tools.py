@@ -12,10 +12,13 @@ from src.services.scraper import sincronizar_cursos_y_tareas
 fm = FileManager()
 
 def obtener_tareas_pendientes() -> str:
-    """Devuelve las tareas pendientes extraídas de la base de datos."""
+    """Devuelve las tareas pendientes extraídas de la base de datos. Excluye vencidas y entregadas."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT curso, nombre_tarea, fecha_limite FROM tareas WHERE estado='Pendiente'")
+    cursor.execute(
+        "SELECT curso, nombre_tarea, fecha_limite FROM tareas "
+        "WHERE estado NOT IN ('Vencida', 'Entregada')"
+    )
     tareas = cursor.fetchall()
     conn.close()
     
@@ -80,8 +83,44 @@ def listar_archivos_tarea(curso: str) -> str:
         f"Ruta de la carpeta: {res['course_path']}"
     )
 
+def _verificar_tarea_no_vencida(nombre_tarea: str, curso: str) -> str | None:
+    """Verifica en la DB si la tarea está marcada como Vencida. Retorna mensaje de error o None."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT estado FROM tareas WHERE nombre_tarea = ? AND curso = ? LIMIT 1",
+        (nombre_tarea, curso)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row is None:
+        # Búsqueda parcial por si el nombre no coincide exactamente
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT estado FROM tareas WHERE LOWER(nombre_tarea) LIKE ? AND LOWER(curso) LIKE ? LIMIT 1",
+            (f"%{nombre_tarea.lower()[:30]}%", f"%{curso.lower()[:20]}%")
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+    if row and row[0] == 'Vencida':
+        return (
+            f"⛔ ACCIÓN BLOQUEADA: La tarea '{nombre_tarea}' tiene estado VENCIDA. "
+            f"El agente no puede realizar envíos a tareas con fecha de entrega expirada. "
+            f"Si entregaste esta tarea externamente, actualiza su estado en la interfaz."
+        )
+    return None
+
+
 def preparar_envio_tarea(curso: str, archivo: str, tarea: str) -> str:
     """Verifica el archivo local y prepara los detalles para la confirmación del usuario."""
+    # [AC-4.3] Bloquear si la tarea está vencida
+    bloqueo = _verificar_tarea_no_vencida(tarea, curso)
+    if bloqueo:
+        return bloqueo
+
     res = fm.verify_file_for_upload(curso, archivo)
     if not res['valid']:
         return f"Error al preparar envío: {res['error_message']}"
@@ -100,11 +139,16 @@ def preparar_envio_tarea(curso: str, archivo: str, tarea: str) -> str:
 def ejecutar_envio_tarea(curso: str, archivo: str, tarea: str) -> str:
     """Ejecuta el envío final. Solo debe llamarse tras la confirmación del usuario."""
     from src.services.scraper import subir_tarea_plataforma
+
+    # [AC-4.3] Doble verificación de seguridad antes de ejecutar
+    bloqueo = _verificar_tarea_no_vencida(tarea, curso)
+    if bloqueo:
+        return bloqueo
+
     res = fm.verify_file_for_upload(curso, archivo)
     if not res['valid']:
          return f"Error: Archivo(s) no válido(s). {res['error_message']}"
     
-    # Llamamos al script de scraper que abre la plataforma en modo visible y pausa.
     resultado = subir_tarea_plataforma(curso, tarea, res['file_paths'])
     return resultado['resumen']
 
